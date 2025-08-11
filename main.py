@@ -26,8 +26,8 @@ df.drop(labels=["Date"], axis=1, inplace=True)
 # -----------
 # 결측치 탐지
 # -----------
-print(df.isna().sum().sort_values(ascending=False))
 print("========= 결측치 체크 =========")
+print(df.isna().sum().sort_values(ascending=False))
 
 # -----------
 # 순서형 라벨 인코딩
@@ -60,6 +60,7 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_
 # -------------------
 # CatBoost 학습
 # -------------------
+print("========= CatBoost 학습시작 =========")
 import catboost
 cat_model = catboost.CatBoostRegressor(
     iterations=2500,
@@ -80,7 +81,7 @@ cat_y_pred = cat_model.predict(X_test)
 # XGBoost 학습
 # -------------------
 import xgboost
-
+print("========= XGBoost 학습시작 =========")
 xgb_model = xgboost.XGBRegressor(
     n_estimators=2500,
     learning_rate=0.05,
@@ -88,12 +89,11 @@ xgb_model = xgboost.XGBRegressor(
     min_child_weight=2,
     subsample=0.8,
     colsample_bytree=0.8,
-    device = "cuda",
     tree_method = "hist",
 
+    n_jobs=-1,
     enable_categorical=True,
     random_state=RANDOM_SEED,
-    n_jobs=-1,
 )
 xgb_model.fit(X_train, y_train)
 xgb_y_pred = xgb_model.predict(X_test)
@@ -102,7 +102,7 @@ xgb_y_pred = xgb_model.predict(X_test)
 # LightGBM 학습
 # -------------------
 import lightgbm
-
+print("========= LightGBM 학습시작 =========")
 lgbm_model = lightgbm.LGBMRegressor(
     objective="regression",
     metric="rmse",
