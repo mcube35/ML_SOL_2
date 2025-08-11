@@ -140,7 +140,7 @@ def conv_pred2dict(y_pred, y_test, name):
         'MAE': mae,
         'MSE': mse,
         'RMSE': rmse,
-        'MAPE': mape
+        'MAPE': f'{mape * 100:.2f}%'
     }
 
 pred_list = [(cat_y_pred, "CatBoost"), (xgb_y_pred, "XGBooster"), (lgbm_y_pred, "LightGBM")]

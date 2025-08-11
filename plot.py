@@ -1,9 +1,6 @@
-import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
-
-matplotlib.use('TkAgg', force=True)
 
 def residuals(y_test, y_pred, model_name):
     residuals = y_test - y_pred
