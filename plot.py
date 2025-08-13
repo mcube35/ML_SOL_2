@@ -44,22 +44,18 @@ def performance_table(df_result: pd.DataFrame):
     plt.tight_layout()
     plt.show()
 
-def feature_importance(models: list, X_columns: list):
-    for name, model in models:
-        if hasattr(model, "feature_importances_"):
-            importances = model.feature_importances_
-            df_feat = pd.DataFrame({
-                'Feature': X_columns,
-                'Importance': importances
-            }).sort_values(by='Importance', ascending=False)
+def feature_importance(importances: list, X_columns: list):
+    for name, importance in importances:
+        df_feat = pd.DataFrame({
+            'Feature': X_columns,
+            'Importance': importance
+        }).sort_values(by='Importance', ascending=False)
 
-            plt.figure(figsize=(8, max(4, len(df_feat) * 0.3)))
-            sns.barplot(x="Importance", y="Feature", data=df_feat, hue=X_columns, legend=False, palette="viridis")
-            plt.title(f"{name} - Feature Importance")
-            plt.xlabel("Importance Score")
-            plt.ylabel("Feature")
-            plt.tight_layout()
-            plt.grid(True, axis='x', linestyle='--', alpha=0.5)
-            plt.show()
-        else:
-            print("feature_importances_ 지원안해서 출력 안함")
+        plt.figure(figsize=(8, max(4, len(df_feat) * 0.3)))
+        sns.barplot(x="Importance", y="Feature", data=df_feat, hue=X_columns, legend=False, palette="viridis")
+        plt.title(f"{name} - Feature Importance")
+        plt.xlabel("Importance Score")
+        plt.ylabel("Feature")
+        plt.tight_layout()
+        plt.grid(True, axis='x', linestyle='--', alpha=0.5)
+        plt.show()

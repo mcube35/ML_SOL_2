@@ -5,23 +5,31 @@
 # ============================================
 import pandas as pd
 import numpy as np
-import plot
-from path_helper import PROJECT_DIR
+import os
 
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error, mean_squared_error
-RANDOM_SEED = 100
+import plot
 
+import optimizer
+from path_helper import PROJECT_DIR
+
+USE_GPU = True
+RANDOM_SEED = 100
+OPTIMIZER_TIME_OUT = 1200
+CATBOOST_MODEL_PTH = PROJECT_DIR / "model" / "catboost_model.cbm"
+XGBOOST_MODEL_PTH = PROJECT_DIR / "model" / "xgb_model.json"
+LIGHTGBM_MODEL_PTH = PROJECT_DIR / "model" / "lightgbm_model.txt"
 # ============================================
 # 1. 데이터 전처리
 # ============================================
 
 # -----------
-# 데이터 로드 및 불필요한 컬럼 제거
+# 데이터 로드 및 컬럼 처리
 # -----------
 df = pd.read_csv(PROJECT_DIR / 'dataset' / 'sales_data.csv')
-df.drop(labels=["Date"], axis=1, inplace=True)
+
 
 # -----------
 # 결측치 탐지
@@ -30,7 +38,17 @@ print("========= 결측치 체크 =========")
 print(df.isna().sum().sort_values(ascending=False))
 
 # -----------
-# 순서형 라벨 인코딩
+# Date 파생 변수 생성
+# -----------
+df["Date"] = pd.to_datetime(df["Date"])
+df['Year'] = df['Date'].dt.year
+df['Month'] = df['Date'].dt.month
+df['Day_of_Week'] = df['Date'].dt.dayofweek
+
+df.drop(labels=["Date"], axis=1, inplace=True)
+
+# -----------
+# 순서형 인코딩
 # -----------
 order = {"Spring": 0, "Summer": 1, "Autumn": 2, "Winter": 3}
 df["Seasonality"] = df["Seasonality"].map(order)
@@ -38,13 +56,20 @@ df["Seasonality"] = df["Seasonality"].map(order)
 # -----------
 # 라벨 인코딩 (카테고리)
 # -----------
-cat_cols = ["Product ID", "Store ID", "Region", "Category", "Weather Condition"]
+cat_cols = ["Region", "Category", "Weather Condition", "Product ID", "Store ID"]
 for col in cat_cols:
     le = LabelEncoder()
     df[col] = le.fit_transform(df[col])
     df[col] = df[col].astype("category")
 
+# -----------
+# 수치형 데이터들 표준화
+# -----------
+scar_cols = ['Price', 'Units Ordered', 'Units Sold', 'Inventory Level', 'Competitor Pricing']
+scaler = StandardScaler()
+df[scar_cols] = scaler.fit_transform(df[scar_cols])
 
+print(df.head())
 
 # ============================================
 # 2. 모델 학습시키고 test셋을 이용해서 예측결과(y_pred) 뽑기
@@ -58,70 +83,133 @@ y = df["Demand"]
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=RANDOM_SEED)
 
 # -------------------
-# CatBoost 학습
+# XGBoost 실행
 # -------------------
-print("========= CatBoost 학습시작 =========")
-import catboost
-cat_model = catboost.CatBoostRegressor(
-    iterations=2500,
-    learning_rate=0.05,
-    depth=8,
-    l2_leaf_reg=5.0,
-    bagging_temperature=0.5,
-    border_count=128,
+print("========= XGBoost 실행 =========")
 
-    verbose=100,
-    cat_features=cat_cols,
-    random_state=RANDOM_SEED
-)
-cat_model.fit(X_train, y_train)
-cat_y_pred = cat_model.predict(X_test)
+import xgboost as xgb
+xgb_model = None
+
+if os.path.exists(XGBOOST_MODEL_PTH):
+    print(f"📂 기존 모델 발견: {XGBOOST_MODEL_PTH}")
+    xgb_model = xgb.XGBRegressor()
+    xgb_model.load_model(XGBOOST_MODEL_PTH)
+    print("✅ 모델 로드 완료")
+else:
+    print("🚀 새 모델 학습 시작")
+
+    print("🔧 하이퍼파라미터 튜닝을 시작합니다...")
+    study = optimizer.optimize_xgb(X_train=X_train, use_cuda=USE_GPU, seed=RANDOM_SEED, y_train=y_train, timeout=OPTIMIZER_TIME_OUT)
+
+    print("🔧 최적화된 하이퍼파라미터로 학습합니다...")
+    params = study.best_params.copy()
+    params.update(
+        n_estimators=300,
+        enable_categorical=True,
+        tree_method="hist",
+        device="cuda" if USE_GPU else "cpu",
+        objective="reg:squarederror",
+        eval_metric="rmse",
+        random_state=RANDOM_SEED,
+    )
+    xgb_model = xgb.XGBRegressor(**params)
+    xgb_model.fit(X_train, y_train)
+    print("🔧 학습완료! 모델파일을 저장중입니다...")
+
+    os.makedirs(os.path.dirname(XGBOOST_MODEL_PTH), exist_ok=True)
+    xgb_model.save_model(XGBOOST_MODEL_PTH)
+    print("💾 모델 저장 완료")
+
+dtest = xgb.DMatrix(X_test, enable_categorical=True)
+xgb_y_pred = xgb_model.get_booster().predict(dtest, validate_features=False)
+
 
 # -------------------
-# XGBoost 학습
+# LightGBM 실행
 # -------------------
-import xgboost
-print("========= XGBoost 학습시작 =========")
-xgb_model = xgboost.XGBRegressor(
-    n_estimators=2500,
-    learning_rate=0.05,
-    max_depth=6,
-    min_child_weight=2,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    tree_method = "hist",
+print("========= LightGBM 실행 =========")
 
-    n_jobs=-1,
-    enable_categorical=True,
-    random_state=RANDOM_SEED,
-)
-xgb_model.fit(X_train, y_train)
-xgb_y_pred = xgb_model.predict(X_test)
-
-# -------------------
-# LightGBM 학습
-# -------------------
 import lightgbm
-print("========= LightGBM 학습시작 =========")
-lgbm_model = lightgbm.LGBMRegressor(
-    objective="regression",
-    metric="rmse",
-    learning_rate=0.05,
-    n_estimators=2500,
-    num_leaves=63,
-    max_depth=-1,
-    min_data_in_leaf=50,
-    feature_fraction=0.8,
-    bagging_fraction=0.8,
-    bagging_freq=1,
-    lambda_l2=2.0,
+lgbm_model = None
 
-    random_state=RANDOM_SEED
-)
-lgbm_model.fit(X_train, y_train)
+if os.path.exists(LIGHTGBM_MODEL_PTH):
+    print(f"📂 기존 모델 발견: {LIGHTGBM_MODEL_PTH}")
+    lgbm_model = lightgbm.Booster(model_file=LIGHTGBM_MODEL_PTH)
+    print("✅ 모델 로드 완료")
+else:
+    print("🚀 새 모델 학습 시작")
+
+    print("🔧 하이퍼파라미터 튜닝을 시작합니다...")
+    study = optimizer.optimize_lgbm(X_train=X_train, y_train=y_train, use_gpu=USE_GPU, categorical_feature=cat_cols, timeout=OPTIMIZER_TIME_OUT)
+    params = study.best_params.copy()
+    params.update({
+        "verbose": 100,
+        "random_state": RANDOM_SEED,
+        "boosting_type": "gbdt",
+        "n_jobs": -1,
+        "device": "gpu" if USE_GPU else "cpu",
+        "force_row_wise": True,
+        "max_depth": -1,
+    })
+    params.update(n_estimators=300)
+
+    print("🔧 최적화된 하이퍼파라미터로 학습합니다...")
+    lgbm_model = lightgbm.LGBMRegressor(**params)
+    lgbm_model.fit(X_train, y_train, categorical_feature=cat_cols)
+
+    print("🔧 학습완료! 모델파일을 저장중입니다...")
+    os.makedirs(os.path.dirname(LIGHTGBM_MODEL_PTH), exist_ok=True)
+    lgbm_model = lgbm_model.booster_
+    lgbm_model.save_model(LIGHTGBM_MODEL_PTH)
+    print("💾 모델 저장 완료")
+
 lgbm_y_pred = lgbm_model.predict(X_test)
 
+# -------------------
+# CatBoost 실행
+# -------------------
+print("========= CatBoost 실행 =========")
+import catboost 
 
+cat_model = None
+
+if os.path.exists(CATBOOST_MODEL_PTH):
+    print(f"📂 기존 모델 발견: {CATBOOST_MODEL_PTH}")
+    cat_model = catboost.CatBoostRegressor()
+    cat_model.load_model(CATBOOST_MODEL_PTH)
+    print("✅ 모델 로드 완료")
+else:
+    print("🚀 새 모델 학습 시작")
+
+    print("🔧 하이퍼파라미터 튜닝을 시작합니다...")
+    study = optimizer.optimize_catboost(
+        X_train=X_train, y_train=y_train,
+        cat_features=cat_cols,
+        timeout=OPTIMIZER_TIME_OUT,
+        use_gpu=USE_GPU,
+        seed=RANDOM_SEED
+    )
+    params = study.best_params.copy()
+    params.update({
+        "random_seed": RANDOM_SEED,
+        "allow_writing_files": False,
+        "bootstrap_type": "Bernoulli",
+        "verbose": 100,
+    })
+    if USE_GPU:
+        params.update({"task_type": "GPU", "devices": "0"})
+    params.update(iterations=300)
+
+    print("🔧 최적화된 하이퍼파라미터로 학습합니다...")
+    cat_model = catboost.CatBoostRegressor(**params)
+    cat_model.fit(X_train, y_train, cat_features=cat_cols)
+
+    print("🔧 학습완료! 모델파일을 저장중입니다...")
+    os.makedirs(os.path.dirname(CATBOOST_MODEL_PTH), exist_ok=True)
+    cat_model.save_model(CATBOOST_MODEL_PTH)
+    print("💾 모델 저장 완료")
+
+cat_y_pred = cat_model.predict(X_test)
 
 # ============================================
 # 3. 시각화 하기
@@ -143,9 +231,9 @@ def conv_pred2dict(y_pred, y_test, name):
         'MAPE': f'{mape * 100:.2f}%'
     }
 
-pred_list = [(cat_y_pred, "CatBoost"), (xgb_y_pred, "XGBooster"), (lgbm_y_pred, "LightGBM")]
+pred_list = [("CatBoost", cat_y_pred), ("XGBooster", xgb_y_pred), ("LightGBM", lgbm_y_pred)]
 results = []
-for pred, name in pred_list:
+for name, pred in pred_list:
     results.append(conv_pred2dict(pred, y_test, name))
 
 df_result = pd.DataFrame(results)
@@ -154,9 +242,10 @@ plot.performance_table(df_result)
 # ----------------------------------------------
 # 각 모델의 주요변수 출력하기
 # ----------------------------------------------
-models = [
-    ("CatBoost", cat_model),
-    ("XGBoost", xgb_model),
-    ("LightGBM", lgbm_model),
+cat_importances = cat_model.get_feature_importance(data=catboost.Pool(X_train, label=y_train, cat_features=cat_cols))
+importances = [
+    ("CatBoost", cat_importances),
+    ("XGBoost", xgb_model.feature_importances_),
+    ("LightGBM", lgbm_model.feature_importance()),
 ]
-plot.feature_importance(models, X_train.columns)
+plot.feature_importance(importances, X_train.columns)
